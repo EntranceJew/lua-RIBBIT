@@ -2,7 +2,6 @@ local math_random = math.random
 if love and love.math and love.math.random then
 	math_random = love.math.random
 end
-local json = require('dkjson')
 
 local http = require("socket.http")
 local ltn12 = require("ltn12")
@@ -34,7 +33,7 @@ local RIBBITClient = {
 	DEFAULT_GATEWAY = 'http://frog.tips/api/1',
 	DEFAULT_ENDPOINT = 'tips',
 	DEFAULT_HEADERS = {
-		['Accept'] = 'application/json',
+		['Accept'] = 'application/der-stream',
 	},
 }
 RIBBITClient.__index = RIBBITClient
@@ -62,18 +61,72 @@ function RIBBITClient.new(gateway, endpoint, headers)
 	return self
 end
 
+-- not to be mistaken with 'dacoda-fy'
+local function decodify(str, len, pos)
+	local seq = seq or {}
+	local sPos = 1
+	while (sPos < len) do
+		local newSeq, itemType, itemSize
+		itemType = string.byte(str, sPos, sPos)
+		sPos = sPos + 1
+		itemSize = string.byte(str, sPos, sPos)
+		sPos = sPos + 1
+		if (itemSize > 128) then
+			itemSize = itemSize - 128
+			local itemSizeCalc = 0
+			local itemSizeNext
+			for i = 1, itemSize do
+				itemSizeCalc = itemSizeCalc * 256
+				itemSizeNext = string.byte(str, sPos, sPos)
+				sPos = sPos + 1
+				itemSizeCalc = itemSizeCalc + itemSizeNext
+			end
+			itemSize = itemSizeCalc
+		end
+		
+		if itemType then
+			if itemType == 0x02 then
+				local hexStr
+				hexStr = {string.byte(str, sPos, sPos + itemSize)}
+				sPos = sPos + itemSize
+				
+				hexStr = string.format(string.rep("%X", itemSize), unpack(hexStr))
+				newSeq = tonumber(hexStr, 16)
+				if ( newSeq >= math.pow(256, itemSize)/2) then
+					newSeq = newSeq - math.pow(256, itemSize)
+				end
+				table.insert(seq, newSeq)
+			elseif itemType == 0x0C then
+				newSeq = string.sub(str, sPos, sPos + itemSize)
+				sPos = sPos + itemSize
+				table.insert(seq, newSeq)
+			elseif itemType == 0x30 then
+				newSeq = decodify(string.sub(str, sPos, sPos+itemSize-1), itemSize, sPos)
+				sPos = sPos + itemSize
+				table.insert(seq, newSeq)
+			end
+		end
+	end
+	return seq
+end
+
 ---
 -- Take in a CROAK of data and return a lua object.
 -- @name RIBBITClient.decode_CROAK
 -- @param croak A JSON encoded CROAK.
 -- @return The decoded CROAK tips object.
 function RIBBITClient.decode_CROAK(croak)
-	local obj, pos, err = json.decode(croak, 1, nil)
-	if err then
-		assert(false, "Error decoding CROAK:", err)
-	else
-		return obj.tips
+	local deCROAK = decodify(croak, string.len(croak))[1]
+	
+	local formattedCROAK = {}
+	for k,v in ipairs(deCROAK) do
+		table.insert(formattedCROAK, {
+			number = v[1],
+			tip = v[2]
+		})
 	end
+	
+	return formattedCROAK
 end
 
 ---
@@ -92,7 +145,7 @@ function RIBBITClient:croak(refresh_cache)
 		assert(false, "Error during CROAK request: " .. tostring(croak_resp.status))
 	else
 		local CROAK = RIBBITClient.decode_CROAK(table.concat(croak_resp.resp,''))
-		if self._croak_dict == nil or refresh_cache then
+		if self._croak_dict == nil or	 refresh_cache then
 			self._croak_dict = {}
 			self._croak_unordered = {}
 		end
